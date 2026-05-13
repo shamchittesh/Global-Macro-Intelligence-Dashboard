@@ -1,0 +1,30 @@
+[project]
+name = "global-macro-dashboard"
+version = "0.1.0"
+description = "Global Macro Intelligence Dashboard - A learning tool for institutional-grade macro thinking"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "property: Property-based tests (hypothesis)",
+    "unit: Unit tests",
+    "integration: Integration tests",
+]
+
+[tool.hypothesis]
+database_backend = "directory"
+
+[tool.hypothesis.profiles.default]
+max_examples = 100
+
+[tool.hypothesis.profiles.ci]
+max_examples = 200
+derandomize = true
+
+[tool.hypothesis.profiles.dev]
+max_examples = 10
