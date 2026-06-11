@@ -1,22 +1,8 @@
-# Global Macro Intelligence Dashboard - Dependencies (Simplified)
+# Global Macro Intelligence Dashboard - Runtime Dependencies
 
-# UI Framework
 streamlit==1.45.1
-
-# Market Data
 yfinance==0.2.55
-
-# Web Scraping
 beautifulsoup4==4.12.3
 requests==2.32.3
-
-# AI Summary
 google-genai==2.8.0
-
-# Data Processing
 pandas==2.2.3
-
-# Testing
-pytest==8.3.5
-hypothesis==6.131.15
-pytest-mock==3.14.0
