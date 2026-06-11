@@ -1,13 +1,26 @@
-"""Global Macro Intelligence Dashboard - Main Entry Point.
+"""Global Macro Intelligence Dashboard - Simplified Single-Page App.
 
-A learning-oriented tool for developing institutional-grade macro thinking.
-Provides real-time asset monitoring, cross-asset analysis, dominant variable
-identification, historical event analysis, and expectation tracking.
+A streamlined dashboard tracking 7 key macro instruments with daily/weekly
+percentage changes, dominant variable identification, and scraped market reports.
 """
 
+import time
+from datetime import datetime
+
 import streamlit as st
-from lib.data_fetcher import DataFetcher, DataFetchError
-from lib.db import get_db
+
+from lib.cache import invalidate_cache, invalidate_stale_instrument_data
+from lib.calculations import (
+    INSTRUMENT_ORDER,
+    DominantVariable,
+    InstrumentData,
+    get_color_for_change,
+    identify_dominant_variable,
+)
+from lib.data_fetcher import fetch_all_instruments
+from lib.market_day import get_latest_market_day, get_current_trading_week
+from lib.scraper import MarketReport, fetch_daily_recap, fetch_weekly_update
+from lib.ai_summary import generate_cross_asset_narrative, generate_report_tldr
 
 # ---------------------------------------------------------------------------
 # Page Configuration
@@ -17,143 +30,250 @@ st.set_page_config(
     page_title="Global Macro Intelligence Dashboard",
     page_icon="🌍",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
 # ---------------------------------------------------------------------------
-# Shared Session State Initialization
+# Session State Initialization
 # ---------------------------------------------------------------------------
 
-if "data_fetcher" not in st.session_state:
-    st.session_state["data_fetcher"] = DataFetcher()
+if "last_refresh_time" not in st.session_state:
+    st.session_state["last_refresh_time"] = 0.0
 
-if "db_connected" not in st.session_state:
-    db = get_db()
-    st.session_state["db_connected"] = db is not None and db.connected
-
-if "custom_assets" not in st.session_state:
-    st.session_state["custom_assets"] = []
 
 # ---------------------------------------------------------------------------
-# Sidebar - Global Controls
+# Refresh Logic
 # ---------------------------------------------------------------------------
 
-with st.sidebar:
-    st.title("🌍 Macro Dashboard")
-    st.caption("Global Macro Intelligence")
+REFRESH_COOLDOWN_SECONDS = 60
 
-    st.divider()
 
-    # Data source status indicators
-    st.subheader("📡 Data Sources")
+def is_refresh_allowed() -> bool:
+    """Check if enough time has passed since last refresh."""
+    elapsed = time.time() - st.session_state["last_refresh_time"]
+    return elapsed >= REFRESH_COOLDOWN_SECONDS
 
-    # Check database connection
-    db_status = "🟢 Connected" if st.session_state["db_connected"] else "🔴 Not Connected"
-    st.write(f"**Supabase:** {db_status}")
 
-    # API status
-    try:
-        fred_key = st.secrets["fred"]["api_key"]
-        fred_status = "🟢 Configured" if fred_key else "🟡 Not Configured"
-    except (KeyError, TypeError):
-        fred_status = "🟡 Not Configured"
+def seconds_until_refresh() -> int:
+    """Seconds remaining until refresh is allowed."""
+    elapsed = time.time() - st.session_state["last_refresh_time"]
+    remaining = REFRESH_COOLDOWN_SECONDS - elapsed
+    return max(0, int(remaining))
 
-    try:
-        td_key = st.secrets["twelve_data"]["api_key"]
-        td_status = "🟢 Configured" if td_key else "🟡 Not Configured"
-    except (KeyError, TypeError):
-        td_status = "🟡 Not Configured"
 
-    st.write(f"**FRED API:** {fred_status}")
-    st.write(f"**Twelve Data:** {td_status}")
-    st.write("**yfinance:** 🟢 No key needed")
+# ---------------------------------------------------------------------------
+# Helper: Color-coded metric display
+# ---------------------------------------------------------------------------
 
-    st.divider()
 
-    # Refresh button
-    if st.button("🔄 Refresh Data", use_container_width=True):
-        st.cache_data.clear()
+def render_colored_change(value: float | None, label: str) -> str:
+    """Render a percentage change value with color as HTML.
+
+    Args:
+        value: Percentage change, or None if unavailable.
+        label: Label prefix (e.g., "Daily" or "Weekly").
+
+    Returns:
+        HTML string with colored value.
+    """
+    if value is None:
+        return f"<span style='color: gray;'>{label}: N/A</span>"
+
+    color = get_color_for_change(value)
+    if color == "green":
+        css_color = "#00c853"
+    elif color == "red":
+        css_color = "#ff1744"
+    else:
+        css_color = "inherit"
+
+    sign = "+" if value > 0 else ""
+    return f"<span style='color: {css_color}; font-weight: bold;'>{label}: {sign}{value:.2f}%</span>"
+
+
+# ---------------------------------------------------------------------------
+# Main Dashboard
+# ---------------------------------------------------------------------------
+
+# Title
+st.title("🌍 Global Macro Intelligence Dashboard")
+
+# Resolve market day
+market_day = get_latest_market_day()
+week_start, week_end = get_current_trading_week(market_day)
+
+st.caption(
+    f"Latest market day: **{market_day.strftime('%A, %B %d, %Y')}** · "
+    f"Week: {week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}"
+)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Refresh Button
+# ---------------------------------------------------------------------------
+
+col_refresh, col_status = st.columns([1, 4])
+
+with col_refresh:
+    refresh_allowed = is_refresh_allowed()
+    if st.button(
+        "🔄 Refresh Data",
+        disabled=not refresh_allowed,
+        use_container_width=True,
+    ):
+        # Invalidate caches and trigger refetch
+        invalidate_stale_instrument_data()
+        invalidate_cache(f"instruments_{market_day.isoformat()}")
+        invalidate_cache("daily_report")
+        invalidate_cache("weekly_report")
+        invalidate_cache("ai_narrative")
+        invalidate_cache("tldr_daily")
+        invalidate_cache("tldr_weekly")
+        st.session_state["last_refresh_time"] = time.time()
         st.rerun()
 
-    st.divider()
-
-    # Navigation info
-    st.subheader("📖 Pages")
-    st.markdown("""
-    - 📊 **Asset Monitor** — Real-time prices & charts
-    - 🔗 **Cross-Asset** — Correlations & overlays
-    - 🎯 **Dominant Variable** — What's driving markets
-    - 📅 **Event Analysis** — Historical event impact
-    - 📈 **Expectations** — Surprise & repricing
-    """)
+with col_status:
+    if not refresh_allowed:
+        remaining = seconds_until_refresh()
+        st.caption(f"⏳ Refresh available in {remaining}s")
 
 # ---------------------------------------------------------------------------
-# Main Content - Landing Page
+# Instrument Panel Grid
 # ---------------------------------------------------------------------------
 
-st.title("🌍 Global Macro Intelligence Dashboard")
-st.markdown("---")
+st.subheader("📊 Macro Instruments")
 
-st.markdown("""
-### Welcome
+# Fetch data
+instruments = fetch_all_instruments(market_day, week_start, week_end)
 
-This dashboard helps you develop institutional-grade macro thinking by tracking
-how macro variables interact, which factor dominates on any given day, and how
-surprise drives repricing.
+# Display in columns (4 on top row, 3 on bottom)
+row1_cols = st.columns(4)
+row2_cols = st.columns(4)  # Use 4 cols, last will be empty
 
-**Core question to ask every day:**
-> *Which variable is dominating today?*
-""")
+all_cols = row1_cols + row2_cols[:3]
 
-# Quick status overview
-st.subheader("📊 Quick Overview")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.info("**Navigate** using the sidebar pages to explore different analysis views.")
-
-with col2:
-    if not st.session_state["db_connected"]:
-        st.warning(
-            "**Database not connected.** Configure Supabase in "
-            "`.streamlit/secrets.toml` to enable persistence."
+for i, instrument in enumerate(instruments):
+    with all_cols[i]:
+        st.markdown(
+            f"**{instrument.ticker}**  \n"
+            f"<small style='color: #888;'>{instrument.macro_significance}</small>",
+            unsafe_allow_html=True,
         )
+
+        if not instrument.data_available:
+            st.markdown(
+                "<span style='color: gray;'>Data unavailable</span>",
+                unsafe_allow_html=True,
+            )
+        else:
+            daily_html = render_colored_change(instrument.daily_change_pct, "Daily")
+            weekly_html = render_colored_change(instrument.weekly_change_pct, "Weekly")
+            st.markdown(f"{daily_html}<br>{weekly_html}", unsafe_allow_html=True)
+
+        st.markdown("---")
+
+# ---------------------------------------------------------------------------
+# Dominant Variable Section
+# ---------------------------------------------------------------------------
+
+st.subheader("🎯 Dominant Variable")
+
+dominant = identify_dominant_variable(instruments)
+
+# Fetch daily report early so we can use it for AI context
+daily_report = fetch_daily_recap()
+
+if dominant:
+    # Color the dominant variable's change
+    dom_color = get_color_for_change(dominant.daily_change_pct)
+    if dom_color == "green":
+        dom_css = "#00c853"
+    elif dom_color == "red":
+        dom_css = "#ff1744"
     else:
-        st.success("**Database connected.** Your data will be persisted.")
+        dom_css = "inherit"
 
-with col3:
-    st.info(
-        "**Tip:** Start with the Asset Monitor to see current market state, "
-        "then check Cross-Asset for correlations."
+    sign = "+" if dominant.daily_change_pct > 0 else ""
+
+    st.markdown(
+        f"**{dominant.ticker}** ({dominant.macro_significance}) · "
+        f"<span style='color: {dom_css}; font-weight: bold;'>"
+        f"{sign}{dominant.daily_change_pct:.2f}%</span>",
+        unsafe_allow_html=True,
     )
 
-# Error banners for data source failures
-if not st.session_state["db_connected"]:
-    st.warning(
-        "⚠️ **Read-only mode:** Supabase is not connected. "
-        "Journal entries, events, and expectations will not be saved. "
-        "Configure credentials in `.streamlit/secrets.toml` to enable full functionality."
-    )
+    # Cross-asset narrative
+    narrative = generate_cross_asset_narrative(instruments, dominant, daily_report)
+    st.info(narrative)
+else:
+    daily_report = fetch_daily_recap()
+    st.warning("Unable to determine dominant variable — no instrument data available.")
 
-st.markdown("---")
+st.divider()
 
-# Daily routine reminder
-st.subheader("📝 Daily Macro Routine")
-st.markdown("""
-Every morning, ask yourself:
+# ---------------------------------------------------------------------------
+# Market Reports
+# ---------------------------------------------------------------------------
 
-1. **What moved?** — Check the Asset Monitor
-2. **Why?** — Look at Cross-Asset correlations for clues
-3. **What variable dominated?** — Record it in Dominant Variable
-4. **What changed in expectations?** — Track in Expectations
+st.subheader("📰 Market Reports")
 
-> *"Gold down despite war because real yields rose."*
-> — This is the kind of insight you're building toward.
-""")
+report_col1, report_col2 = st.columns(2)
 
-st.markdown("---")
+# Daily Report
+with report_col1:
+    st.markdown("#### 📅 Daily Market Recap")
+
+    if daily_report.available:
+        # TL;DR at the top
+        tldr = generate_report_tldr(daily_report, "daily")
+        if tldr:
+            st.markdown("**TL;DR**")
+            st.markdown(tldr)
+            st.markdown("")
+
+        st.markdown(f"**{daily_report.title}**")
+        st.caption(f"Published: {daily_report.publication_date}")
+        with st.expander("Read full report", expanded=False):
+            st.markdown(daily_report.body)
+        if daily_report.error_message:
+            st.caption(f"⚠️ {daily_report.error_message}")
+    else:
+        st.warning(
+            "📭 Daily market recap temporarily unavailable.\n\n"
+            f"{daily_report.error_message or 'Could not fetch report.'}"
+        )
+
+# Weekly Report
+with report_col2:
+    st.markdown("#### 📈 Weekly Market Update")
+    weekly_report = fetch_weekly_update()
+
+    if weekly_report.available:
+        # TL;DR at the top
+        tldr = generate_report_tldr(weekly_report, "weekly")
+        if tldr:
+            st.markdown("**TL;DR**")
+            st.markdown(tldr)
+            st.markdown("")
+
+        st.markdown(f"**{weekly_report.title}**")
+        st.caption(f"Published: {weekly_report.publication_date}")
+        with st.expander("Read full report", expanded=False):
+            st.markdown(weekly_report.body)
+        if weekly_report.error_message:
+            st.caption(f"⚠️ {weekly_report.error_message}")
+    else:
+        st.warning(
+            "📭 Weekly market update temporarily unavailable.\n\n"
+            f"{weekly_report.error_message or 'Could not fetch report.'}"
+        )
+
+# ---------------------------------------------------------------------------
+# Footer
+# ---------------------------------------------------------------------------
+
+st.divider()
 st.caption(
-    "Built for learning. Think like macro hedge funds, rates traders, "
-    "FX desks, and institutional allocators."
+    f"Last loaded: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · "
+    "Data source: yfinance · Reports: Edward Jones"
 )

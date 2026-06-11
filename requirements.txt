@@ -1,24 +1,20 @@
-# Global Macro Intelligence Dashboard - Dependencies
+# Global Macro Intelligence Dashboard - Dependencies (Simplified)
 
 # UI Framework
 streamlit==1.45.1
-streamlit-lightweight-charts==0.7.20
 
-# Charting
-plotly==6.1.2
-
-# Market Data Sources
+# Market Data
 yfinance==0.2.55
-fredapi==0.5.2
-twelvedata==1.2.18
 
-# Database
-supabase==2.15.1
+# Web Scraping
+beautifulsoup4==4.12.3
+requests==2.32.3
+
+# AI Summary
+google-genai==2.8.0
 
 # Data Processing
 pandas==2.2.3
-numpy==2.2.6
-scipy==1.15.3
 
 # Testing
 pytest==8.3.5

@@ -1,320 +1,183 @@
-"""Pure calculation functions for the Global Macro Intelligence Dashboard.
+"""Calculations module for the Global Macro Intelligence Dashboard.
 
-Provides correlation analysis, price normalization, dominant variable identification,
-and surprise magnitude computation. All functions are pure with no side effects.
+Pure functions for computing daily/weekly percentage changes,
+identifying the dominant variable, and determining color coding.
+No Streamlit or network dependencies.
 """
 
-from datetime import datetime
-
-import numpy as np
-import pandas as pd
-
-from lib.models import CorrelationShift, DominantFactor
+from dataclasses import dataclass
 
 
-def compute_correlation_matrix(
-    price_data: dict[str, pd.Series],
-    window: int,
-) -> pd.DataFrame:
-    """Compute rolling correlation matrix between assets.
+# --- Instrument Configuration ---
 
-    Args:
-        price_data: Dict mapping asset name to price series (returns-based).
-        window: Rolling window in trading days.
+INSTRUMENT_ORDER: list[str] = ["US10Y", "US2Y", "DXY", "Oil", "SPY", "QQQ", "VIX"]
 
-    Returns:
-        DataFrame with correlation values between all asset pairs.
-        The matrix is symmetric with diagonal = 1.0 and off-diagonal in [-1, 1].
-        Pairs with insufficient data will have NaN values.
-    """
-    if not price_data or len(price_data) < 2:
-        return pd.DataFrame()
+INSTRUMENT_CONFIG: dict[str, dict[str, str]] = {
+    "US10Y": {"ticker": "^TNX", "macro_significance": "Growth/Rates"},
+    "US2Y": {"ticker": "^IRX", "macro_significance": "Fed Expectations"},
+    "DXY": {"ticker": "DX-Y.NYB", "macro_significance": "Global Liquidity"},
+    "Oil": {"ticker": "CL=F", "macro_significance": "Fear/Real yields"},
+    "SPY": {"ticker": "SPY", "macro_significance": "Risk Appetite"},
+    "QQQ": {"ticker": "QQQ", "macro_significance": "Growth/Liquidity"},
+    "VIX": {"ticker": "^VIX", "macro_significance": "Fear"},
+}
 
-    # Build a DataFrame from the return series, aligning on index
-    df = pd.DataFrame(price_data)
-
-    # Use only the last `window` observations for the correlation calculation
-    df_window = df.tail(window)
-
-    # Need at least 2 data points to compute correlation
-    if len(df_window) < 2:
-        asset_names = list(price_data.keys())
-        return pd.DataFrame(
-            np.nan, index=asset_names, columns=asset_names
-        )
-
-    corr_matrix = df_window.corr()
-
-    return corr_matrix
+# Typical daily standard deviation (%) for each instrument.
+# Used to normalize moves so "dominant variable" reflects significance
+# relative to each instrument's own normal volatility, not raw %.
+# Approximate values: annualized vol / sqrt(252)
+TYPICAL_DAILY_VOL: dict[str, float] = {
+    "US10Y": 0.8,   # ~12% annualized vol on yield changes
+    "US2Y": 0.5,    # Lower vol, short-end more anchored
+    "DXY": 0.4,     # ~6% annualized
+    "Oil": 2.0,     # ~30% annualized
+    "SPY": 1.0,     # ~16% annualized
+    "QQQ": 1.3,     # ~20% annualized
+    "VIX": 4.0,     # ~60% annualized (VIX is very volatile)
+}
 
 
-def normalize_prices(
-    price_series: dict[str, pd.Series],
-    base_date: datetime,
-) -> dict[str, pd.Series]:
-    """Normalize multiple price series to 100 at base_date for overlay comparison.
-
-    Args:
-        price_series: Dict mapping asset name to price series.
-        base_date: The date at which all series should equal 100.0.
-
-    Returns:
-        Dict mapping asset name to normalized price series.
-        All series will have value 100.0 at base_date.
-        Ratios between any two points in a normalized series equal
-        the ratios in the original series.
-    """
-    result: dict[str, pd.Series] = {}
-
-    for name, series in price_series.items():
-        if series.empty:
-            result[name] = series.copy()
-            continue
-
-        # Find the base value - handle both datetime and date index types
-        base_value = None
-        if base_date in series.index:
-            base_value = series[base_date]
-        else:
-            # Try matching just the date portion if index is datetime-like
-            try:
-                # Normalize to date for comparison
-                base_date_normalized = pd.Timestamp(base_date).normalize()
-                idx_normalized = pd.DatetimeIndex(series.index).normalize()
-                mask = idx_normalized == base_date_normalized
-                if mask.any():
-                    base_value = series.iloc[mask.argmax()]
-            except (TypeError, ValueError):
-                pass
-
-        if base_value is None or base_value == 0:
-            # Cannot normalize if base_date not found or base value is zero
-            result[name] = series.copy()
-            continue
-
-        # Normalize: value_normalized = (value / base_value) * 100
-        result[name] = (series / base_value) * 100.0
-
-    return result
+# --- Dataclasses ---
 
 
-def compute_correlation_changes(
-    current_corr: pd.DataFrame,
-    prior_corr: pd.DataFrame,
-    threshold: float = 0.3,
-) -> list[CorrelationShift]:
-    """Detect significant correlation shifts.
+@dataclass
+class InstrumentData:
+    """Processed instrument data ready for display."""
+
+    ticker: str
+    macro_significance: str
+    daily_change_pct: float | None = None
+    weekly_change_pct: float | None = None
+    data_available: bool = True
+
+
+@dataclass
+class DominantVariable:
+    """The identified dominant market variable."""
+
+    ticker: str
+    macro_significance: str
+    daily_change_pct: float
+    commentary: str
+
+
+# --- Pure Calculation Functions ---
+
+
+def compute_daily_change(open_price: float, close_price: float) -> float:
+    """Compute daily percentage change.
+
+    Formula: ((close - open) / open) * 100, rounded to 2 decimal places.
 
     Args:
-        current_corr: Current correlation matrix.
-        prior_corr: Prior correlation matrix.
-        threshold: Minimum absolute change to flag (default 0.3).
+        open_price: Opening price (must be > 0).
+        close_price: Closing price.
 
     Returns:
-        List of CorrelationShift for asset pairs where |change| > threshold.
-        Excludes pairs where |change| <= threshold.
+        Percentage change rounded to 2 decimal places.
     """
-    shifts: list[CorrelationShift] = []
-
-    if current_corr.empty or prior_corr.empty:
-        return shifts
-
-    # Get common assets between both matrices
-    common_assets = sorted(
-        set(current_corr.columns) & set(prior_corr.columns)
-    )
-
-    # Check each unique pair (upper triangle only to avoid duplicates)
-    for i, asset_a in enumerate(common_assets):
-        for asset_b in common_assets[i + 1:]:
-            current_val = current_corr.loc[asset_a, asset_b]
-            prior_val = prior_corr.loc[asset_a, asset_b]
-
-            # Skip if either value is NaN
-            if pd.isna(current_val) or pd.isna(prior_val):
-                continue
-
-            change = current_val - prior_val
-
-            if abs(change) > threshold:
-                shifts.append(
-                    CorrelationShift(
-                        asset_a=asset_a,
-                        asset_b=asset_b,
-                        previous_corr=float(prior_val),
-                        current_corr=float(current_val),
-                        change=float(change),
-                    )
-                )
-
-    return shifts
+    return round(((close_price - open_price) / open_price) * 100, 2)
 
 
-def identify_dominant_variable(
-    asset_returns: dict[str, float],
-    correlations: pd.DataFrame,
-) -> list[DominantFactor]:
-    """Identify top contributing factors for current session.
+def compute_weekly_change(monday_open: float, friday_close: float) -> float:
+    """Compute weekly percentage change.
 
-    Uses magnitude of moves weighted by cross-asset correlation strength
-    to rank which variable is driving markets.
+    Formula: ((friday_close - monday_open) / monday_open) * 100, rounded to 2 decimal places.
 
     Args:
-        asset_returns: Dict mapping asset name to current session return (%).
-        correlations: Correlation matrix between assets.
+        monday_open: Monday opening price (must be > 0).
+        friday_close: Friday closing price.
 
     Returns:
-        List of DominantFactor sorted by influence score (descending), top 3.
-        All scores are non-negative.
+        Percentage change rounded to 2 decimal places.
     """
-    if not asset_returns:
-        return []
-
-    factors: list[DominantFactor] = []
-
-    for asset, ret in asset_returns.items():
-        # Base influence is the absolute magnitude of the move
-        magnitude = abs(ret)
-
-        # Weight by average absolute correlation with other assets
-        # Higher correlation with other movers = more likely to be the driver
-        corr_weight = 1.0
-        if not correlations.empty and asset in correlations.columns:
-            # Get correlations of this asset with all others
-            asset_corrs = correlations.loc[asset].drop(asset, errors="ignore")
-            if not asset_corrs.empty:
-                # Use mean absolute correlation as a weight
-                valid_corrs = asset_corrs.dropna()
-                if not valid_corrs.empty:
-                    corr_weight = valid_corrs.abs().mean()
-
-        # Influence score = magnitude * correlation weight
-        # This rewards assets that moved significantly AND are highly
-        # correlated with other assets (suggesting they are driving)
-        influence_score = magnitude * corr_weight
-
-        # Ensure non-negative (should always be, but be explicit)
-        influence_score = max(0.0, influence_score)
-
-        factors.append(
-            DominantFactor(
-                variable=asset,
-                influence_score=float(influence_score),
-                description=f"{asset}: {ret:+.2f}% move, corr weight {corr_weight:.2f}",
-            )
-        )
-
-    # Sort descending by influence score
-    factors.sort(key=lambda f: f.influence_score, reverse=True)
-
-    # Return top 3
-    return factors[:3]
+    return round(((friday_close - monday_open) / monday_open) * 100, 2)
 
 
-def compute_surprise_magnitude(
-    actual: float,
-    expected: float,
-    historical_std: float,
-) -> float | None:
-    """Calculate normalized surprise magnitude.
+def get_color_for_change(value: float | None) -> str:
+    """Determine color for a percentage change value.
 
     Args:
-        actual: The actual reported value.
-        expected: The consensus expected value.
-        historical_std: Historical standard deviation of surprises.
+        value: Percentage change value. None means data unavailable.
 
     Returns:
-        (actual - expected) / historical_std when historical_std > 0.
-        None when historical_std <= 0.
+        "green" for positive, "red" for negative, "default" for zero or None.
     """
-    if historical_std <= 0:
+    if value is None:
+        return "default"
+    if value > 0:
+        return "green"
+    if value < 0:
+        return "red"
+    return "default"
+
+
+def identify_dominant_variable(instruments: list[InstrumentData]) -> DominantVariable | None:
+    """Identify the instrument with the largest volatility-adjusted daily move.
+
+    Normalizes each instrument's daily change by its typical daily volatility
+    to produce a z-score. The instrument with the highest absolute z-score
+    is the dominant variable — meaning it moved the most relative to its
+    own normal range.
+
+    Falls back to weekly change if no daily data is available.
+
+    Tiebreaker: first in INSTRUMENT_ORDER wins.
+
+    Args:
+        instruments: List of InstrumentData with computed changes.
+
+    Returns:
+        DominantVariable identifying the dominant market factor, or None if
+        no instruments have any change data.
+    """
+    # Try daily first
+    valid = [i for i in instruments if i.daily_change_pct is not None]
+
+    # Fall back to weekly if no daily data available
+    use_weekly = False
+    if not valid:
+        valid = [i for i in instruments if i.weekly_change_pct is not None]
+        use_weekly = True
+
+    if not valid:
         return None
 
-    return (actual - expected) / historical_std
+    # Compute z-score for each instrument (normalized by typical vol)
+    def sort_key(inst: InstrumentData) -> tuple[float, int]:
+        change = inst.weekly_change_pct if use_weekly else inst.daily_change_pct
+        typical_vol = TYPICAL_DAILY_VOL.get(inst.ticker, 1.0)
+        if use_weekly:
+            typical_vol *= 2.2  # ~sqrt(5) for weekly vs daily
+        z_score = abs(change) / typical_vol  # type: ignore[operator]
+        try:
+            order_idx = INSTRUMENT_ORDER.index(inst.ticker)
+        except ValueError:
+            order_idx = len(INSTRUMENT_ORDER)
+        return (-z_score, order_idx)
 
+    valid.sort(key=sort_key)
+    dominant = valid[0]
 
-def compute_asset_reaction(
-    price_series: pd.Series,
-    release_timestamp: datetime,
-    windows: list[str],
-) -> dict[str, float]:
-    """Compute price reaction as percentage change from release price at each window endpoint.
+    change = dominant.weekly_change_pct if use_weekly else dominant.daily_change_pct
+    typical_vol = TYPICAL_DAILY_VOL.get(dominant.ticker, 1.0)
+    if use_weekly:
+        typical_vol *= 2.2
+    z_score = abs(change) / typical_vol  # type: ignore[operator]
+    direction = "up" if change > 0 else "down"  # type: ignore[operator]
+    period = "this week" if use_weekly else "today"
 
-    Args:
-        price_series: Time-indexed price series for an asset.
-        release_timestamp: The timestamp of the economic data release.
-        windows: List of window labels (e.g., ["5min", "1hr", "1day"]).
-            Supported formats: Xmin, Xhr, Xday (where X is an integer).
+    commentary = (
+        f"The dominant variable {period} is {dominant.macro_significance} "
+        f"({dominant.ticker}), moving {direction} {abs(change):.2f}% "  # type: ignore[arg-type]
+        f"({z_score:.1f}σ relative to normal). "
+        f"This suggests {dominant.macro_significance.lower()} is the primary "
+        f"driver of market sentiment {period}."
+    )
 
-    Returns:
-        Dict mapping window label to percentage change:
-        reaction = (price_at_window_end - price_at_release) / price_at_release * 100
-        Windows where the endpoint price is unavailable will be omitted.
-    """
-    if price_series.empty:
-        return {}
-
-    # Find the release price - use the value at or just before the release timestamp
-    release_price = None
-    if release_timestamp in price_series.index:
-        release_price = price_series[release_timestamp]
-    else:
-        # Find the nearest price at or before the release timestamp
-        prior = price_series[price_series.index <= release_timestamp]
-        if not prior.empty:
-            release_price = prior.iloc[-1]
-
-    if release_price is None or release_price == 0:
-        return {}
-
-    # Parse window strings into timedeltas
-    window_deltas = _parse_windows(windows)
-
-    reactions: dict[str, float] = {}
-    for window_label, delta in window_deltas.items():
-        target_time = release_timestamp + delta
-
-        # Find the price at or just before the target time
-        available = price_series[price_series.index <= target_time]
-        if available.empty:
-            continue
-
-        end_price = available.iloc[-1]
-        reaction = (end_price - release_price) / release_price * 100.0
-        reactions[window_label] = float(reaction)
-
-    return reactions
-
-
-def _parse_windows(windows: list[str]) -> dict[str, pd.Timedelta]:
-    """Parse window label strings into timedelta objects.
-
-    Supported formats:
-        - Xmin (e.g., "5min" -> 5 minutes)
-        - Xhr (e.g., "1hr" -> 1 hour)
-        - Xday (e.g., "1day" -> 1 day)
-
-    Returns:
-        Dict mapping original window label to pd.Timedelta.
-        Invalid formats are skipped.
-    """
-    import re
-
-    result: dict[str, pd.Timedelta] = {}
-
-    for w in windows:
-        match = re.match(r"^(\d+)(min|hr|day)$", w)
-        if not match:
-            continue
-
-        value = int(match.group(1))
-        unit = match.group(2)
-
-        if unit == "min":
-            result[w] = pd.Timedelta(minutes=value)
-        elif unit == "hr":
-            result[w] = pd.Timedelta(hours=value)
-        elif unit == "day":
-            result[w] = pd.Timedelta(days=value)
-
-    return result
+    return DominantVariable(
+        ticker=dominant.ticker,
+        macro_significance=dominant.macro_significance,
+        daily_change_pct=change,  # type: ignore[arg-type]
+        commentary=commentary,
+    )
