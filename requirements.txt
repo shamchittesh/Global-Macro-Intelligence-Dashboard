@@ -1,8 +1,6 @@
-# Global Macro Intelligence Dashboard - Runtime Dependencies
-
-streamlit==1.45.1
-yfinance==0.2.55
-beautifulsoup4==4.12.3
-requests==2.32.3
-google-genai==2.8.0
-pandas==2.2.3
+streamlit
+yfinance
+beautifulsoup4
+requests
+google-genai
+pandas
