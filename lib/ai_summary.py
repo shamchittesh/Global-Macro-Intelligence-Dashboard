@@ -247,3 +247,126 @@ TL;DR:"""
 
     # No heuristic fallback for TL;DR — requires AI
     return None
+
+
+# ---------------------------------------------------------------------------
+# Combined AI call (single Gemini request for all AI content)
+# ---------------------------------------------------------------------------
+
+
+def generate_all_ai_content(
+    instruments: list[InstrumentData],
+    dominant: DominantVariable,
+    daily_report: MarketReport | None,
+    weekly_report: MarketReport | None,
+) -> dict[str, str | None]:
+    """Generate all AI content in a single Gemini call to avoid rate limits.
+
+    Returns a dict with keys: 'narrative', 'tldr_daily', 'tldr_weekly'.
+    Each value is the generated text or None if unavailable.
+    """
+    # Check caches first
+    result = {
+        "narrative": None,
+        "tldr_daily": None,
+        "tldr_weekly": None,
+    }
+
+    cached_narrative = read_cache("ai_narrative", max_age_hours=6.0)
+    cached_daily = read_cache("tldr_daily", max_age_hours=4.0)
+    cached_weekly = read_cache("tldr_weekly", max_age_hours=12.0)
+
+    if cached_narrative:
+        result["narrative"] = cached_narrative.get("narrative")
+    if cached_daily:
+        result["tldr_daily"] = cached_daily.get("tldr")
+    if cached_weekly:
+        result["tldr_weekly"] = cached_weekly.get("tldr")
+
+    # If all cached, return immediately
+    if all(result.values()):
+        return result
+
+    # Build a combined prompt for everything we still need
+    sections_needed = []
+    moves_text = _build_moves_text(instruments)
+
+    if not result["narrative"]:
+        report_context = ""
+        if daily_report and daily_report.available:
+            report_context = daily_report.body[:800]
+
+        sections_needed.append(f"""SECTION 1 - CROSS-ASSET NARRATIVE:
+Write a 2-3 sentence cross-asset narrative explaining: what was the primary driver, how it transmitted across assets, and what this tells us about the market regime. Think like a hedge fund CIO morning note. Max 60 words.
+
+Context:
+{moves_text}
+Dominant variable (vol-adjusted): {dominant.ticker} ({dominant.macro_significance}) at {dominant.daily_change_pct:+.2f}%
+Report context: {report_context[:500]}""")
+
+    if not result["tldr_daily"] and daily_report and daily_report.available and daily_report.body.strip():
+        sections_needed.append(f"""SECTION 2 - DAILY REPORT TL;DR:
+Summarize into exactly 3-4 bullet points (use • for each). One concise sentence per bullet. Focus on what moved, why, and what it means.
+
+Report:
+{daily_report.body[:2000]}""")
+
+    if not result["tldr_weekly"] and weekly_report and weekly_report.available and weekly_report.body.strip():
+        sections_needed.append(f"""SECTION 3 - WEEKLY REPORT TL;DR:
+Summarize into exactly 3-4 bullet points (use • for each). One concise sentence per bullet. Focus on key themes and outlook.
+
+Report:
+{weekly_report.body[:2000]}""")
+
+    if not sections_needed:
+        return result
+
+    combined_prompt = """You are a macro strategist. Complete each section below. Separate sections with "---".
+
+""" + "\n\n---\n\n".join(sections_needed) + "\n\nRespond with each section separated by ---:"
+
+    response = _call_gemini(combined_prompt)
+
+    if not response:
+        # Fall back to heuristic for narrative only
+        if not result["narrative"]:
+            result["narrative"] = _heuristic_narrative(instruments, dominant)
+        return result
+
+    # Parse response into sections
+    parts = response.split("---")
+    parts = [p.strip() for p in parts if p.strip()]
+
+    section_idx = 0
+    if not result["narrative"] and section_idx < len(parts):
+        narrative = parts[section_idx].strip().strip('"').strip("'")
+        # Remove any "SECTION 1" prefix if Gemini echoed it
+        for prefix in ["SECTION 1", "CROSS-ASSET NARRATIVE:", "SECTION 1 -"]:
+            if narrative.upper().startswith(prefix.upper()):
+                narrative = narrative[len(prefix):].strip().strip("-").strip(":").strip()
+        result["narrative"] = narrative
+        write_cache("ai_narrative", {"narrative": narrative})
+        section_idx += 1
+
+    if not result["tldr_daily"] and daily_report and daily_report.available and section_idx < len(parts):
+        tldr = parts[section_idx].strip()
+        for prefix in ["SECTION 2", "DAILY REPORT TL;DR:", "SECTION 2 -"]:
+            if tldr.upper().startswith(prefix.upper()):
+                tldr = tldr[len(prefix):].strip().strip("-").strip(":").strip()
+        result["tldr_daily"] = tldr
+        write_cache("tldr_daily", {"tldr": tldr})
+        section_idx += 1
+
+    if not result["tldr_weekly"] and weekly_report and weekly_report.available and section_idx < len(parts):
+        tldr = parts[section_idx].strip()
+        for prefix in ["SECTION 3", "WEEKLY REPORT TL;DR:", "SECTION 3 -"]:
+            if tldr.upper().startswith(prefix.upper()):
+                tldr = tldr[len(prefix):].strip().strip("-").strip(":").strip()
+        result["tldr_weekly"] = tldr
+        write_cache("tldr_weekly", {"tldr": tldr})
+
+    # Ensure narrative has fallback
+    if not result["narrative"]:
+        result["narrative"] = _heuristic_narrative(instruments, dominant)
+
+    return result

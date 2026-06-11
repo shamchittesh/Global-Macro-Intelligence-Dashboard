@@ -20,7 +20,7 @@ from lib.calculations import (
 from lib.data_fetcher import fetch_all_instruments
 from lib.market_day import get_latest_market_day, get_current_trading_week
 from lib.scraper import MarketReport, fetch_daily_recap, fetch_weekly_update
-from lib.ai_summary import generate_cross_asset_narrative, generate_report_tldr
+from lib.ai_summary import generate_all_ai_content
 
 # ---------------------------------------------------------------------------
 # Page Configuration
@@ -173,15 +173,25 @@ for i, instrument in enumerate(instruments):
         st.markdown("---")
 
 # ---------------------------------------------------------------------------
+# Fetch reports & generate all AI content in ONE Gemini call
+# ---------------------------------------------------------------------------
+
+daily_report = fetch_daily_recap()
+weekly_report = fetch_weekly_update()
+dominant = identify_dominant_variable(instruments)
+
+# Single Gemini call for: narrative + daily TL;DR + weekly TL;DR
+ai_content = {"narrative": None, "tldr_daily": None, "tldr_weekly": None}
+if dominant:
+    ai_content = generate_all_ai_content(
+        instruments, dominant, daily_report, weekly_report
+    )
+
+# ---------------------------------------------------------------------------
 # Dominant Variable Section
 # ---------------------------------------------------------------------------
 
 st.subheader("🎯 Dominant Variable")
-
-dominant = identify_dominant_variable(instruments)
-
-# Fetch daily report early so we can use it for AI context
-daily_report = fetch_daily_recap()
 
 if dominant:
     # Color the dominant variable's change
@@ -203,10 +213,9 @@ if dominant:
     )
 
     # Cross-asset narrative
-    narrative = generate_cross_asset_narrative(instruments, dominant, daily_report)
-    st.info(narrative)
+    if ai_content["narrative"]:
+        st.info(ai_content["narrative"])
 else:
-    daily_report = fetch_daily_recap()
     st.warning("Unable to determine dominant variable — no instrument data available.")
 
 st.divider()
@@ -225,10 +234,9 @@ with report_col1:
 
     if daily_report.available:
         # TL;DR at the top
-        tldr = generate_report_tldr(daily_report, "daily")
-        if tldr:
+        if ai_content["tldr_daily"]:
             st.markdown("**TL;DR**")
-            st.markdown(tldr)
+            st.markdown(ai_content["tldr_daily"])
             st.markdown("")
 
         st.markdown(f"**{daily_report.title}**")
@@ -246,14 +254,12 @@ with report_col1:
 # Weekly Report
 with report_col2:
     st.markdown("#### 📈 Weekly Market Update")
-    weekly_report = fetch_weekly_update()
 
     if weekly_report.available:
         # TL;DR at the top
-        tldr = generate_report_tldr(weekly_report, "weekly")
-        if tldr:
+        if ai_content["tldr_weekly"]:
             st.markdown("**TL;DR**")
-            st.markdown(tldr)
+            st.markdown(ai_content["tldr_weekly"])
             st.markdown("")
 
         st.markdown(f"**{weekly_report.title}**")
