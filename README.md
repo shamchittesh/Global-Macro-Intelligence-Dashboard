@@ -1,5 +1,7 @@
 # 🌍 Global Macro Intelligence Dashboard
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://global-macro-intelligence-dashboard-hsubvvqbv9zhoyaqfsqgwz.streamlit.app/)
+
 A single-page Streamlit dashboard tracking 7 key macro instruments with daily/weekly percentage changes, volatility-adjusted dominant variable identification, AI-powered cross-asset narratives, and scraped Edward Jones market reports.
 
 ## What It Does
