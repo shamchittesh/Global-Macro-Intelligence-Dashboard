@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from lib.market_day import (
+from src.market_day import (
     US_EASTERN,
     USER_TZ,
     get_current_trading_week,

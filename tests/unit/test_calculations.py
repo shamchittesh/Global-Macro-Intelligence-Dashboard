@@ -2,7 +2,7 @@
 
 import pytest
 
-from lib.calculations import (
+from src.calculations import (
     INSTRUMENT_CONFIG,
     INSTRUMENT_ORDER,
     DominantVariable,

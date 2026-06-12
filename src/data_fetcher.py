@@ -11,15 +11,15 @@ from datetime import date, timedelta
 import pandas as pd
 import yfinance as yf
 
-from lib.cache import read_cache, write_cache
-from lib.calculations import (
+from src.cache import read_cache, write_cache
+from src.calculations import (
     INSTRUMENT_CONFIG,
     INSTRUMENT_ORDER,
     InstrumentData,
     compute_daily_change,
     compute_weekly_change,
 )
-from lib.market_day import get_current_trading_week, get_latest_market_day
+from src.market_day import get_current_trading_week, get_latest_market_day
 
 logger = logging.getLogger(__name__)
 

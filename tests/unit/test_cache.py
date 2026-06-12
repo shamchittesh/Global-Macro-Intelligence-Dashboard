@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from lib.cache import (
+from src.cache import (
     CACHE_DIR,
     USER_TZ,
     invalidate_cache,
@@ -22,7 +22,7 @@ from lib.cache import (
 @pytest.fixture(autouse=True)
 def temp_cache_dir(tmp_path, monkeypatch):
     """Use a temporary directory for cache in all tests."""
-    monkeypatch.setattr("lib.cache.CACHE_DIR", tmp_path)
+    monkeypatch.setattr("src.cache.CACHE_DIR", tmp_path)
     return tmp_path
 
 
@@ -42,13 +42,13 @@ class TestIsCacheFresh:
     def test_same_day_no_ttl_is_fresh(self):
         now = datetime.now(USER_TZ)
         fetched = now.replace(hour=1, minute=0).isoformat()
-        with patch("lib.cache._now_utc4", return_value=now):
+        with patch("src.cache._now_utc4", return_value=now):
             assert is_cache_fresh(fetched, max_age_hours=None) is True
 
     def test_different_day_no_ttl_is_stale(self):
         now = datetime.now(USER_TZ)
         yesterday = (now - timedelta(days=1)).isoformat()
-        with patch("lib.cache._now_utc4", return_value=now):
+        with patch("src.cache._now_utc4", return_value=now):
             assert is_cache_fresh(yesterday, max_age_hours=None) is False
 
 
@@ -76,8 +76,8 @@ class TestWriteAndReadCache:
 
     def test_write_failure_returns_false(self, tmp_path, monkeypatch):
         # Point to a non-writable path
-        import lib.cache
-        monkeypatch.setattr(lib.cache, "CACHE_DIR", Path("/nonexistent/path"))
+        import src.cache
+        monkeypatch.setattr(src.cache, "CACHE_DIR", Path("/nonexistent/path"))
         assert write_cache("key", {"data": 1}) is False
 
 

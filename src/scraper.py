@@ -11,7 +11,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
-from lib.cache import read_cache, write_cache
+from src.cache import read_cache, write_cache
 
 logger = logging.getLogger(__name__)
 

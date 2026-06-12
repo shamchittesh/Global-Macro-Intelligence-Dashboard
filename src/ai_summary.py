@@ -8,9 +8,9 @@ Falls back to heuristic when Gemini is unavailable.
 """
 
 import logging
-from lib.calculations import DominantVariable, InstrumentData, TYPICAL_DAILY_VOL
-from lib.scraper import MarketReport
-from lib.cache import read_cache, write_cache
+from src.calculations import DominantVariable, InstrumentData, TYPICAL_DAILY_VOL
+from src.scraper import MarketReport
+from src.cache import read_cache, write_cache
 
 logger = logging.getLogger(__name__)
 

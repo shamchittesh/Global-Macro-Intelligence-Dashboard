@@ -11,7 +11,7 @@ import pytest
 from hypothesis import given, assume, settings
 from hypothesis import strategies as st
 
-from lib.calculations import (
+from src.calculations import (
     INSTRUMENT_ORDER,
     InstrumentData,
     compute_daily_change,
@@ -19,14 +19,14 @@ from lib.calculations import (
     get_color_for_change,
     identify_dominant_variable,
 )
-from lib.cache import is_cache_fresh, USER_TZ
-from lib.market_day import (
+from src.cache import is_cache_fresh, USER_TZ
+from src.market_day import (
     US_EASTERN,
     get_latest_market_day,
     is_trading_day,
     is_us_market_holiday,
 )
-from lib.scraper import truncate_body
+from src.scraper import truncate_body
 
 
 # --- Property 1: Daily change formula correctness ---
@@ -128,7 +128,7 @@ def test_market_day_valid_trading_day(dt):
 )
 def test_dominant_variable_max_absolute(changes):
     """The dominant variable is the one with the largest volatility-adjusted z-score."""
-    from lib.calculations import TYPICAL_DAILY_VOL
+    from src.calculations import TYPICAL_DAILY_VOL
 
     instruments = []
     for i, change in enumerate(changes):

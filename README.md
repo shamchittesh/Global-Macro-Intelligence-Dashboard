@@ -62,7 +62,7 @@ That's it. Streamlit Cloud handles the rest.
 
 ```
 ├── app.py                  # Single-page Streamlit dashboard
-├── lib/
+├── src/
 │   ├── market_day.py       # US market day resolution (timezone, holidays)
 │   ├── calculations.py     # Daily/weekly % change, dominant variable logic
 │   ├── data_fetcher.py     # yfinance batch fetcher (7 instruments)

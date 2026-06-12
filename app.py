@@ -9,18 +9,18 @@ from datetime import datetime
 
 import streamlit as st
 
-from lib.cache import invalidate_cache, invalidate_stale_instrument_data
-from lib.calculations import (
+from src.cache import invalidate_cache, invalidate_stale_instrument_data
+from src.calculations import (
     INSTRUMENT_ORDER,
     DominantVariable,
     InstrumentData,
     get_color_for_change,
     identify_dominant_variable,
 )
-from lib.data_fetcher import fetch_all_instruments
-from lib.market_day import get_latest_market_day, get_current_trading_week
-from lib.scraper import MarketReport, fetch_daily_recap, fetch_weekly_update
-from lib.ai_summary import generate_all_ai_content
+from src.data_fetcher import fetch_all_instruments
+from src.market_day import get_latest_market_day, get_current_trading_week
+from src.scraper import MarketReport, fetch_daily_recap, fetch_weekly_update
+from src.ai_summary import generate_all_ai_content
 
 # ---------------------------------------------------------------------------
 # Page Configuration
