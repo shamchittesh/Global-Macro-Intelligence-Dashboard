@@ -296,7 +296,7 @@ def generate_all_ai_content(
         if daily_report and daily_report.available:
             report_context = daily_report.body[:800]
 
-        sections_needed.append(f"""SECTION 1 - CROSS-ASSET NARRATIVE:
+        sections_needed.append(f"""[NARRATIVE]
 Write a 2-3 sentence cross-asset narrative explaining: what was the primary driver, how it transmitted across assets, and what this tells us about the market regime. Think like a hedge fund CIO morning note. Max 60 words.
 
 Context:
@@ -305,14 +305,14 @@ Dominant variable (vol-adjusted): {dominant.ticker} ({dominant.macro_significanc
 Report context: {report_context[:500]}""")
 
     if not result["tldr_daily"] and daily_report and daily_report.available and daily_report.body.strip():
-        sections_needed.append(f"""SECTION 2 - DAILY REPORT TL;DR:
+        sections_needed.append(f"""[DAILY_TLDR]
 Summarize into exactly 3-4 bullet points (use • for each). One concise sentence per bullet. Focus on what moved, why, and what it means.
 
 Report:
 {daily_report.body[:2000]}""")
 
     if not result["tldr_weekly"] and weekly_report and weekly_report.available and weekly_report.body.strip():
-        sections_needed.append(f"""SECTION 3 - WEEKLY REPORT TL;DR:
+        sections_needed.append(f"""[WEEKLY_TLDR]
 Summarize into exactly 3-4 bullet points (use • for each). One concise sentence per bullet. Focus on key themes and outlook.
 
 Report:
@@ -321,9 +321,20 @@ Report:
     if not sections_needed:
         return result
 
-    combined_prompt = """You are a macro strategist. Complete each section below. Separate sections with "---".
+    combined_prompt = """You are a macro strategist. Complete each section below. Use EXACTLY these markers to separate sections:
 
-""" + "\n\n---\n\n".join(sections_needed) + "\n\nRespond with each section separated by ---:"
+[NARRATIVE]
+(your narrative here)
+
+[DAILY_TLDR]
+(your daily bullets here)
+
+[WEEKLY_TLDR]
+(your weekly bullets here)
+
+Now complete:
+
+""" + "\n\n".join(sections_needed) + "\n\nRespond using the [SECTION] markers above:"
 
     response = _call_gemini(combined_prompt)
 
@@ -333,37 +344,30 @@ Report:
             result["narrative"] = _heuristic_narrative(instruments, dominant)
         return result
 
-    # Parse response into sections
-    parts = response.split("---")
-    parts = [p.strip() for p in parts if p.strip()]
+    # Parse response using section markers
+    import re
 
-    section_idx = 0
-    if not result["narrative"] and section_idx < len(parts):
-        narrative = parts[section_idx].strip().strip('"').strip("'")
-        # Remove any "SECTION 1" prefix if Gemini echoed it
-        for prefix in ["SECTION 1", "CROSS-ASSET NARRATIVE:", "SECTION 1 -"]:
-            if narrative.upper().startswith(prefix.upper()):
-                narrative = narrative[len(prefix):].strip().strip("-").strip(":").strip()
-        result["narrative"] = narrative
-        write_cache("ai_narrative", {"narrative": narrative})
-        section_idx += 1
+    narrative_match = re.search(r'\[NARRATIVE\]\s*\n?(.*?)(?=\[DAILY_TLDR\]|\[WEEKLY_TLDR\]|\Z)', response, re.DOTALL)
+    daily_match = re.search(r'\[DAILY_TLDR\]\s*\n?(.*?)(?=\[WEEKLY_TLDR\]|\Z)', response, re.DOTALL)
+    weekly_match = re.search(r'\[WEEKLY_TLDR\]\s*\n?(.*?)(?=\Z)', response, re.DOTALL)
 
-    if not result["tldr_daily"] and daily_report and daily_report.available and section_idx < len(parts):
-        tldr = parts[section_idx].strip()
-        for prefix in ["SECTION 2", "DAILY REPORT TL;DR:", "SECTION 2 -"]:
-            if tldr.upper().startswith(prefix.upper()):
-                tldr = tldr[len(prefix):].strip().strip("-").strip(":").strip()
-        result["tldr_daily"] = tldr
-        write_cache("tldr_daily", {"tldr": tldr})
-        section_idx += 1
+    if not result["narrative"] and narrative_match:
+        narrative = narrative_match.group(1).strip()
+        if narrative:
+            result["narrative"] = narrative
+            write_cache("ai_narrative", {"narrative": narrative})
 
-    if not result["tldr_weekly"] and weekly_report and weekly_report.available and section_idx < len(parts):
-        tldr = parts[section_idx].strip()
-        for prefix in ["SECTION 3", "WEEKLY REPORT TL;DR:", "SECTION 3 -"]:
-            if tldr.upper().startswith(prefix.upper()):
-                tldr = tldr[len(prefix):].strip().strip("-").strip(":").strip()
-        result["tldr_weekly"] = tldr
-        write_cache("tldr_weekly", {"tldr": tldr})
+    if not result["tldr_daily"] and daily_match:
+        tldr = daily_match.group(1).strip()
+        if tldr:
+            result["tldr_daily"] = tldr
+            write_cache("tldr_daily", {"tldr": tldr})
+
+    if not result["tldr_weekly"] and weekly_match:
+        tldr = weekly_match.group(1).strip()
+        if tldr:
+            result["tldr_weekly"] = tldr
+            write_cache("tldr_weekly", {"tldr": tldr})
 
     # Ensure narrative has fallback
     if not result["narrative"]:

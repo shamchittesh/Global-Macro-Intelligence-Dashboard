@@ -97,7 +97,21 @@ def _html_to_markdown(element) -> str:
                         parts.append(f"- {li_text}")
                 parts.append("")
             elif tag == "blockquote":
-                parts.append(f"\n> {text}\n")
+                # Handle multi-paragraph blockquotes
+                bq_parts = []
+                for bq_child in child.children:
+                    if hasattr(bq_child, "name") and bq_child.name == "p":
+                        bq_parts.append(f"> {bq_child.get_text(strip=True)}")
+                    elif hasattr(bq_child, "name") and bq_child.name:
+                        bq_parts.append(f"> {bq_child.get_text(strip=True)}")
+                    else:
+                        t = str(bq_child).strip()
+                        if t:
+                            bq_parts.append(f"> {t}")
+                if bq_parts:
+                    parts.append("\n" + "\n>\n".join(bq_parts) + "\n")
+                else:
+                    parts.append(f"\n> {text}\n")
             elif tag in ("br", "hr"):
                 parts.append("\n---\n")
             elif tag in ("strong", "b"):
@@ -174,22 +188,44 @@ def _parse_edward_jones_page(html: str) -> tuple[str, str, str]:
             pub_date = "Date unavailable"
 
     # Extract body with formatting preserved as markdown
-    article = soup.find("article")
-    if article:
-        # Remove the title from article body if it's duplicated
-        if title_elem and title_elem.parent == article:
-            title_elem.decompose()
-        body = _html_to_markdown(article)
-    else:
-        main = soup.find("main") or soup.find("div", {"role": "main"})
+    # Try multiple content selectors in order of specificity
+    content_elem = None
+
+    # 1. Look for rich-text div (Edward Jones uses this)
+    content_elem = soup.find("div", class_="rich-text")
+
+    # 2. Try article tag
+    if not content_elem:
+        content_elem = soup.find("article")
+
+    # 3. Try main content area but look for the content-heavy div inside
+    if not content_elem:
+        main = soup.find("main")
         if main:
-            body = _html_to_markdown(main)
-        else:
-            # Last resort: convert paragraphs to markdown
-            paragraphs = soup.find_all("p")
-            body = "\n\n".join(
-                p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)
-            )
+            # Find the div with the most paragraph content
+            divs = main.find_all("div", recursive=True)
+            best_div = None
+            best_p_count = 0
+            for div in divs:
+                p_count = len(div.find_all("p", recursive=False))
+                if p_count > best_p_count:
+                    best_p_count = p_count
+                    best_div = div
+            content_elem = best_div if best_div else main
+
+    if content_elem:
+        # Remove the title from body if it's duplicated
+        if title_elem and content_elem.find("h1"):
+            h1 = content_elem.find("h1")
+            if h1:
+                h1.decompose()
+        body = _html_to_markdown(content_elem)
+    else:
+        # Last resort: convert paragraphs to markdown
+        paragraphs = soup.find_all("p")
+        body = "\n\n".join(
+            p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)
+        )
 
     if not body.strip():
         raise ValueError("Could not extract report body from page")
