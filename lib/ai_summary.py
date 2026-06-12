@@ -250,7 +250,7 @@ TL;DR:"""
 
 
 # ---------------------------------------------------------------------------
-# Combined AI call (single Gemini request for all AI content)
+# Combined AI call (sequential with caching)
 # ---------------------------------------------------------------------------
 
 
@@ -259,118 +259,147 @@ def generate_all_ai_content(
     dominant: DominantVariable,
     daily_report: MarketReport | None,
     weekly_report: MarketReport | None,
+    weekly_dominant: DominantVariable | None = None,
 ) -> dict[str, str | None]:
-    """Generate all AI content in a single Gemini call to avoid rate limits.
+    """Generate all AI content, using cache and making Gemini calls as needed.
 
-    Returns a dict with keys: 'narrative', 'tldr_daily', 'tldr_weekly'.
-    Each value is the generated text or None if unavailable.
+    Makes up to 4 separate Gemini calls (narrative, weekly narrative, daily TL;DR, weekly TL;DR),
+    each cached independently. Skips calls for already-cached content.
+
+    Returns a dict with keys: 'narrative', 'weekly_narrative', 'tldr_daily', 'tldr_weekly'.
     """
-    # Check caches first
-    result = {
+    import time
+
+    result: dict[str, str | None] = {
         "narrative": None,
+        "weekly_narrative": None,
         "tldr_daily": None,
         "tldr_weekly": None,
     }
 
+    # --- Daily Narrative ---
     cached_narrative = read_cache("ai_narrative", max_age_hours=6.0)
-    cached_daily = read_cache("tldr_daily", max_age_hours=4.0)
-    cached_weekly = read_cache("tldr_weekly", max_age_hours=12.0)
-
     if cached_narrative:
         result["narrative"] = cached_narrative.get("narrative")
-    if cached_daily:
-        result["tldr_daily"] = cached_daily.get("tldr")
-    if cached_weekly:
-        result["tldr_weekly"] = cached_weekly.get("tldr")
-
-    # If all cached, return immediately
-    if all(result.values()):
-        return result
-
-    # Build a combined prompt for everything we still need
-    sections_needed = []
-    moves_text = _build_moves_text(instruments)
-
-    if not result["narrative"]:
-        report_context = ""
-        if daily_report and daily_report.available:
-            report_context = daily_report.body[:800]
-
-        sections_needed.append(f"""[NARRATIVE]
-Write a 2-3 sentence cross-asset narrative explaining: what was the primary driver, how it transmitted across assets, and what this tells us about the market regime. Think like a hedge fund CIO morning note. Max 60 words.
-
-Context:
-{moves_text}
-Dominant variable (vol-adjusted): {dominant.ticker} ({dominant.macro_significance}) at {dominant.daily_change_pct:+.2f}%
-Report context: {report_context[:500]}""")
-
-    if not result["tldr_daily"] and daily_report and daily_report.available and daily_report.body.strip():
-        sections_needed.append(f"""[DAILY_TLDR]
-Summarize into exactly 3-4 bullet points (use • for each). One concise sentence per bullet. Focus on what moved, why, and what it means.
-
-Report:
-{daily_report.body[:2000]}""")
-
-    if not result["tldr_weekly"] and weekly_report and weekly_report.available and weekly_report.body.strip():
-        sections_needed.append(f"""[WEEKLY_TLDR]
-Summarize into exactly 3-4 bullet points (use • for each). One concise sentence per bullet. Focus on key themes and outlook.
-
-Report:
-{weekly_report.body[:2000]}""")
-
-    if not sections_needed:
-        return result
-
-    combined_prompt = """You are a macro strategist. Complete each section below. Use EXACTLY these markers to separate sections:
-
-[NARRATIVE]
-(your narrative here)
-
-[DAILY_TLDR]
-(your daily bullets here)
-
-[WEEKLY_TLDR]
-(your weekly bullets here)
-
-Now complete:
-
-""" + "\n\n".join(sections_needed) + "\n\nRespond using the [SECTION] markers above:"
-
-    response = _call_gemini(combined_prompt)
-
-    if not response:
-        # Fall back to heuristic for narrative only
-        if not result["narrative"]:
-            result["narrative"] = _heuristic_narrative(instruments, dominant)
-        return result
-
-    # Parse response using section markers
-    import re
-
-    narrative_match = re.search(r'\[NARRATIVE\]\s*\n?(.*?)(?=\[DAILY_TLDR\]|\[WEEKLY_TLDR\]|\Z)', response, re.DOTALL)
-    daily_match = re.search(r'\[DAILY_TLDR\]\s*\n?(.*?)(?=\[WEEKLY_TLDR\]|\Z)', response, re.DOTALL)
-    weekly_match = re.search(r'\[WEEKLY_TLDR\]\s*\n?(.*?)(?=\Z)', response, re.DOTALL)
-
-    if not result["narrative"] and narrative_match:
-        narrative = narrative_match.group(1).strip()
+    else:
+        narrative = _generate_narrative_via_gemini(instruments, dominant, daily_report)
         if narrative:
             result["narrative"] = narrative
             write_cache("ai_narrative", {"narrative": narrative})
+        else:
+            result["narrative"] = _heuristic_narrative(instruments, dominant)
 
-    if not result["tldr_daily"] and daily_match:
-        tldr = daily_match.group(1).strip()
+    # --- Weekly Narrative ---
+    cached_weekly_narrative = read_cache("ai_weekly_narrative", max_age_hours=12.0)
+    if cached_weekly_narrative:
+        result["weekly_narrative"] = cached_weekly_narrative.get("narrative")
+    elif weekly_dominant:
+        time.sleep(1)
+        weekly_narr = _generate_weekly_narrative_via_gemini(
+            instruments, weekly_dominant, weekly_report
+        )
+        if weekly_narr:
+            result["weekly_narrative"] = weekly_narr
+            write_cache("ai_weekly_narrative", {"narrative": weekly_narr})
+        else:
+            result["weekly_narrative"] = _heuristic_narrative(instruments, weekly_dominant)
+
+    # --- Daily TL;DR ---
+    cached_daily = read_cache("tldr_daily", max_age_hours=4.0)
+    if cached_daily:
+        result["tldr_daily"] = cached_daily.get("tldr")
+    elif daily_report and daily_report.available and daily_report.body.strip():
+        time.sleep(1)
+        tldr = _generate_tldr_via_gemini(daily_report, "daily")
         if tldr:
             result["tldr_daily"] = tldr
             write_cache("tldr_daily", {"tldr": tldr})
 
-    if not result["tldr_weekly"] and weekly_match:
-        tldr = weekly_match.group(1).strip()
+    # --- Weekly TL;DR ---
+    cached_weekly = read_cache("tldr_weekly", max_age_hours=12.0)
+    if cached_weekly:
+        result["tldr_weekly"] = cached_weekly.get("tldr")
+    elif weekly_report and weekly_report.available and weekly_report.body.strip():
+        time.sleep(1)
+        tldr = _generate_tldr_via_gemini(weekly_report, "weekly")
         if tldr:
             result["tldr_weekly"] = tldr
             write_cache("tldr_weekly", {"tldr": tldr})
 
-    # Ensure narrative has fallback
-    if not result["narrative"]:
-        result["narrative"] = _heuristic_narrative(instruments, dominant)
-
     return result
+
+
+def _generate_narrative_via_gemini(
+    instruments: list[InstrumentData],
+    dominant: DominantVariable,
+    daily_report: MarketReport | None,
+) -> str | None:
+    """Generate cross-asset narrative via Gemini."""
+    moves_text = _build_moves_text(instruments)
+    report_context = ""
+    if daily_report and daily_report.available:
+        report_context = daily_report.body[:800]
+
+    prompt = f"""You are a macro strategist. Write a 2-3 sentence cross-asset narrative explaining:
+1. What was the PRIMARY driver today
+2. How it transmitted across asset classes
+3. What this tells us about the current market regime
+
+Be specific and causal. Max 60 words. No preamble, just the narrative.
+
+Today's moves:
+{moves_text}
+
+Dominant variable: {dominant.ticker} ({dominant.macro_significance}) at {dominant.daily_change_pct:+.2f}%
+
+Report context: {report_context[:500]}"""
+
+    return _call_gemini(prompt)
+
+
+def _generate_weekly_narrative_via_gemini(
+    instruments: list[InstrumentData],
+    dominant: DominantVariable,
+    weekly_report: MarketReport | None,
+) -> str | None:
+    """Generate weekly cross-asset narrative via Gemini."""
+    # Build weekly moves
+    lines = []
+    for inst in instruments:
+        if inst.weekly_change_pct is not None:
+            lines.append(f"{inst.ticker} ({inst.macro_significance}): {inst.weekly_change_pct:+.2f}% week")
+    moves_text = "\n".join(lines)
+
+    report_context = ""
+    if weekly_report and weekly_report.available:
+        report_context = weekly_report.body[:1200]
+
+    prompt = f"""You are a macro strategist writing a weekly market wrap. Write a short paragraph (3-4 sentences, max 80 words) explaining:
+1. What was the dominant THEME of the week (not just biggest mover)
+2. The cross-asset narrative — how did rates, equities, FX, and commodities tell a coherent story?
+3. What regime or shift does this week signal going forward?
+
+Use the weekly report context for fundamental reasoning. Be specific about causality. No preamble, just the paragraph.
+
+This week's moves:
+{moves_text}
+
+Week's dominant variable: {dominant.ticker} ({dominant.macro_significance}) at {dominant.daily_change_pct:+.2f}%
+
+Weekly report context:
+{report_context}"""
+
+    return _call_gemini(prompt)
+
+
+def _generate_tldr_via_gemini(report: MarketReport, report_type: str) -> str | None:
+    """Generate TL;DR bullets via Gemini."""
+    prompt = f"""Summarize this {report_type} market report into exactly 3-4 bullet points.
+Each bullet: one concise sentence with a key takeaway.
+Focus on: what moved, why, and what it means going forward.
+Format: start each bullet with •
+
+Report:
+{report.body[:3000]}"""
+
+    return _call_gemini(prompt)

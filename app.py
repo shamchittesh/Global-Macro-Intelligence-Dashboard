@@ -127,6 +127,7 @@ with col_refresh:
         invalidate_cache("daily_report")
         invalidate_cache("weekly_report")
         invalidate_cache("ai_narrative")
+        invalidate_cache("ai_weekly_narrative")
         invalidate_cache("tldr_daily")
         invalidate_cache("tldr_weekly")
         st.session_state["last_refresh_time"] = time.time()
@@ -173,18 +174,19 @@ for i, instrument in enumerate(instruments):
         st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# Fetch reports & generate all AI content in ONE Gemini call
+# Fetch reports & generate all AI content
 # ---------------------------------------------------------------------------
 
 daily_report = fetch_daily_recap()
 weekly_report = fetch_weekly_update()
 dominant = identify_dominant_variable(instruments)
+weekly_dominant = identify_dominant_variable(instruments, use_weekly=True)
 
-# Single Gemini call for: narrative + daily TL;DR + weekly TL;DR
-ai_content = {"narrative": None, "tldr_daily": None, "tldr_weekly": None}
+# AI content (narrative, weekly narrative, TL;DRs)
+ai_content = {"narrative": None, "weekly_narrative": None, "tldr_daily": None, "tldr_weekly": None}
 if dominant:
     ai_content = generate_all_ai_content(
-        instruments, dominant, daily_report, weekly_report
+        instruments, dominant, daily_report, weekly_report, weekly_dominant
     )
 
 # ---------------------------------------------------------------------------
@@ -193,30 +195,55 @@ if dominant:
 
 st.subheader("🎯 Dominant Variable")
 
-if dominant:
-    # Color the dominant variable's change
-    dom_color = get_color_for_change(dominant.daily_change_pct)
-    if dom_color == "green":
-        dom_css = "#00c853"
-    elif dom_color == "red":
-        dom_css = "#ff1744"
+dom_col1, dom_col2 = st.columns(2)
+
+# Daily dominant
+with dom_col1:
+    st.markdown("**Last Trading Day**")
+    if dominant:
+        dom_color = get_color_for_change(dominant.daily_change_pct)
+        if dom_color == "green":
+            dom_css = "#00c853"
+        elif dom_color == "red":
+            dom_css = "#ff1744"
+        else:
+            dom_css = "inherit"
+
+        sign = "+" if dominant.daily_change_pct > 0 else ""
+        st.markdown(
+            f"**{dominant.ticker}** ({dominant.macro_significance}) · "
+            f"<span style='color: {dom_css}; font-weight: bold;'>"
+            f"{sign}{dominant.daily_change_pct:.2f}%</span>",
+            unsafe_allow_html=True,
+        )
+        if ai_content["narrative"]:
+            st.info(ai_content["narrative"])
     else:
-        dom_css = "inherit"
+        st.warning("No daily data available.")
 
-    sign = "+" if dominant.daily_change_pct > 0 else ""
+# Weekly dominant
+with dom_col2:
+    st.markdown("**Past Week**")
+    if weekly_dominant:
+        w_color = get_color_for_change(weekly_dominant.daily_change_pct)
+        if w_color == "green":
+            w_css = "#00c853"
+        elif w_color == "red":
+            w_css = "#ff1744"
+        else:
+            w_css = "inherit"
 
-    st.markdown(
-        f"**{dominant.ticker}** ({dominant.macro_significance}) · "
-        f"<span style='color: {dom_css}; font-weight: bold;'>"
-        f"{sign}{dominant.daily_change_pct:.2f}%</span>",
-        unsafe_allow_html=True,
-    )
-
-    # Cross-asset narrative
-    if ai_content["narrative"]:
-        st.info(ai_content["narrative"])
-else:
-    st.warning("Unable to determine dominant variable — no instrument data available.")
+        sign = "+" if weekly_dominant.daily_change_pct > 0 else ""
+        st.markdown(
+            f"**{weekly_dominant.ticker}** ({weekly_dominant.macro_significance}) · "
+            f"<span style='color: {w_css}; font-weight: bold;'>"
+            f"{sign}{weekly_dominant.daily_change_pct:.2f}%</span>",
+            unsafe_allow_html=True,
+        )
+        if ai_content["weekly_narrative"]:
+            st.info(ai_content["weekly_narrative"])
+    else:
+        st.warning("No weekly data available.")
 
 st.divider()
 

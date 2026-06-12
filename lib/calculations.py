@@ -112,42 +112,42 @@ def get_color_for_change(value: float | None) -> str:
     return "default"
 
 
-def identify_dominant_variable(instruments: list[InstrumentData]) -> DominantVariable | None:
-    """Identify the instrument with the largest volatility-adjusted daily move.
+def identify_dominant_variable(
+    instruments: list[InstrumentData], use_weekly: bool = False
+) -> DominantVariable | None:
+    """Identify the instrument with the largest volatility-adjusted move.
 
-    Normalizes each instrument's daily change by its typical daily volatility
+    Normalizes each instrument's change by its typical daily volatility
     to produce a z-score. The instrument with the highest absolute z-score
-    is the dominant variable — meaning it moved the most relative to its
-    own normal range.
-
-    Falls back to weekly change if no daily data is available.
-
-    Tiebreaker: first in INSTRUMENT_ORDER wins.
+    is the dominant variable.
 
     Args:
         instruments: List of InstrumentData with computed changes.
+        use_weekly: If True, use weekly_change_pct. If False, use daily (with weekly fallback).
 
     Returns:
         DominantVariable identifying the dominant market factor, or None if
         no instruments have any change data.
     """
-    # Try daily first
-    valid = [i for i in instruments if i.daily_change_pct is not None]
-
-    # Fall back to weekly if no daily data available
-    use_weekly = False
-    if not valid:
+    if use_weekly:
         valid = [i for i in instruments if i.weekly_change_pct is not None]
-        use_weekly = True
+        fallback_to_weekly = True
+    else:
+        # Try daily first, fall back to weekly
+        valid = [i for i in instruments if i.daily_change_pct is not None]
+        fallback_to_weekly = False
+        if not valid:
+            valid = [i for i in instruments if i.weekly_change_pct is not None]
+            fallback_to_weekly = True
 
     if not valid:
         return None
 
     # Compute z-score for each instrument (normalized by typical vol)
     def sort_key(inst: InstrumentData) -> tuple[float, int]:
-        change = inst.weekly_change_pct if use_weekly else inst.daily_change_pct
+        change = inst.weekly_change_pct if fallback_to_weekly or use_weekly else inst.daily_change_pct
         typical_vol = TYPICAL_DAILY_VOL.get(inst.ticker, 1.0)
-        if use_weekly:
+        if fallback_to_weekly or use_weekly:
             typical_vol *= 2.2  # ~sqrt(5) for weekly vs daily
         z_score = abs(change) / typical_vol  # type: ignore[operator]
         try:
@@ -159,13 +159,14 @@ def identify_dominant_variable(instruments: list[InstrumentData]) -> DominantVar
     valid.sort(key=sort_key)
     dominant = valid[0]
 
-    change = dominant.weekly_change_pct if use_weekly else dominant.daily_change_pct
+    is_weekly = fallback_to_weekly or use_weekly
+    change = dominant.weekly_change_pct if is_weekly else dominant.daily_change_pct
     typical_vol = TYPICAL_DAILY_VOL.get(dominant.ticker, 1.0)
-    if use_weekly:
+    if is_weekly:
         typical_vol *= 2.2
     z_score = abs(change) / typical_vol  # type: ignore[operator]
     direction = "up" if change > 0 else "down"  # type: ignore[operator]
-    period = "this week" if use_weekly else "today"
+    period = "this week" if is_weekly else "today"
 
     commentary = (
         f"The dominant variable {period} is {dominant.macro_significance} "
