@@ -19,7 +19,7 @@ from src.calculations import (
 )
 from src.data_fetcher import fetch_all_instruments
 from src.market_day import get_latest_market_day, get_current_trading_week
-from src.scraper import MarketReport, fetch_daily_recap, fetch_weekly_update
+from src.scraper import MarketReport, DailyReportDay, fetch_daily_recap, fetch_daily_recap_all_days, fetch_weekly_update
 from src.ai_summary import generate_all_ai_content
 
 # ---------------------------------------------------------------------------
@@ -125,6 +125,7 @@ with col_refresh:
         invalidate_stale_instrument_data()
         invalidate_cache(f"instruments_{market_day.isoformat()}")
         invalidate_cache("daily_report")
+        invalidate_cache("daily_report_days")
         invalidate_cache("weekly_report")
         invalidate_cache("ai_narrative")
         invalidate_cache("ai_weekly_narrative")
@@ -183,11 +184,9 @@ dominant = identify_dominant_variable(instruments)
 weekly_dominant = identify_dominant_variable(instruments, use_weekly=True)
 
 # AI content (narrative, weekly narrative, TL;DRs)
-ai_content = {"narrative": None, "weekly_narrative": None, "tldr_daily": None, "tldr_weekly": None}
-if dominant:
-    ai_content = generate_all_ai_content(
-        instruments, dominant, daily_report, weekly_report, weekly_dominant
-    )
+ai_content = generate_all_ai_content(
+    instruments, dominant, daily_report, weekly_report, weekly_dominant
+)
 
 # ---------------------------------------------------------------------------
 # Dominant Variable Section
@@ -257,21 +256,28 @@ report_col1, report_col2 = st.columns(2)
 
 # Daily Report
 with report_col1:
-    st.markdown("#### 📅 Daily Market Recap")
+    st.markdown("#### 📅 Daily Market Update")
 
-    if daily_report.available:
-        # TL;DR at the top
-        if ai_content["tldr_daily"]:
-            st.markdown("**TL;DR**")
-            st.markdown(ai_content["tldr_daily"])
-            st.markdown("")
+    # Fetch all days
+    all_days = fetch_daily_recap_all_days()
 
+    if all_days:
+        # Latest day shown directly
+        latest = all_days[0]
+        st.markdown(f"**{latest.date_label}**")
+        with st.expander("Read latest recap", expanded=False):
+            st.markdown(latest.body)
+
+        # Previous days as collapsed expanders
+        if len(all_days) > 1:
+            for day in all_days[1:]:
+                with st.expander(f"📄 {day.date_label}", expanded=False):
+                    st.markdown(day.body)
+    elif daily_report.available:
         st.markdown(f"**{daily_report.title}**")
         st.caption(f"Published: {daily_report.publication_date}")
         with st.expander("Read full report", expanded=False):
             st.markdown(daily_report.body)
-        if daily_report.error_message:
-            st.caption(f"⚠️ {daily_report.error_message}")
     else:
         st.warning(
             "📭 Daily market recap temporarily unavailable.\n\n"
@@ -283,12 +289,6 @@ with report_col2:
     st.markdown("#### 📈 Weekly Market Update")
 
     if weekly_report.available:
-        # TL;DR at the top
-        if ai_content["tldr_weekly"]:
-            st.markdown("**TL;DR**")
-            st.markdown(ai_content["tldr_weekly"])
-            st.markdown("")
-
         st.markdown(f"**{weekly_report.title}**")
         st.caption(f"Published: {weekly_report.publication_date}")
         with st.expander("Read full report", expanded=False):
@@ -300,6 +300,29 @@ with report_col2:
             "📭 Weekly market update temporarily unavailable.\n\n"
             f"{weekly_report.error_message or 'Could not fetch report.'}"
         )
+
+# ---------------------------------------------------------------------------
+# AI TL;DR Section
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("🤖 AI Report Summaries")
+
+tldr_col1, tldr_col2 = st.columns(2)
+
+with tldr_col1:
+    st.markdown("**📅 Daily TL;DR**")
+    if ai_content["tldr_daily"]:
+        st.markdown(ai_content["tldr_daily"])
+    else:
+        st.caption("⏳ Generating on next refresh... (requires Gemini API)")
+
+with tldr_col2:
+    st.markdown("**📈 Weekly TL;DR**")
+    if ai_content["tldr_weekly"]:
+        st.markdown(ai_content["tldr_weekly"])
+    else:
+        st.caption("⏳ Generating on next refresh... (requires Gemini API)")
 
 # ---------------------------------------------------------------------------
 # Footer

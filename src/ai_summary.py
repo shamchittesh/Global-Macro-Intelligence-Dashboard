@@ -256,7 +256,7 @@ TL;DR:"""
 
 def generate_all_ai_content(
     instruments: list[InstrumentData],
-    dominant: DominantVariable,
+    dominant: DominantVariable | None,
     daily_report: MarketReport | None,
     weekly_report: MarketReport | None,
     weekly_dominant: DominantVariable | None = None,
@@ -278,53 +278,59 @@ def generate_all_ai_content(
     }
 
     # --- Daily Narrative ---
-    cached_narrative = read_cache("ai_narrative", max_age_hours=6.0)
-    if cached_narrative:
-        result["narrative"] = cached_narrative.get("narrative")
-    else:
-        narrative = _generate_narrative_via_gemini(instruments, dominant, daily_report)
-        if narrative:
-            result["narrative"] = narrative
-            write_cache("ai_narrative", {"narrative": narrative})
+    if dominant:
+        cached_narrative = read_cache("ai_narrative", max_age_hours=6.0)
+        if cached_narrative:
+            result["narrative"] = cached_narrative.get("narrative")
         else:
-            result["narrative"] = _heuristic_narrative(instruments, dominant)
+            narrative = _generate_narrative_via_gemini(instruments, dominant, daily_report)
+            if narrative:
+                result["narrative"] = narrative
+                write_cache("ai_narrative", {"narrative": narrative})
+            else:
+                result["narrative"] = _heuristic_narrative(instruments, dominant)
 
     # --- Weekly Narrative ---
-    cached_weekly_narrative = read_cache("ai_weekly_narrative", max_age_hours=12.0)
-    if cached_weekly_narrative:
-        result["weekly_narrative"] = cached_weekly_narrative.get("narrative")
-    elif weekly_dominant:
-        time.sleep(1)
-        weekly_narr = _generate_weekly_narrative_via_gemini(
-            instruments, weekly_dominant, weekly_report
-        )
-        if weekly_narr:
-            result["weekly_narrative"] = weekly_narr
-            write_cache("ai_weekly_narrative", {"narrative": weekly_narr})
+    if weekly_dominant:
+        cached_weekly_narrative = read_cache("ai_weekly_narrative", max_age_hours=12.0)
+        if cached_weekly_narrative:
+            result["weekly_narrative"] = cached_weekly_narrative.get("narrative")
         else:
-            result["weekly_narrative"] = _heuristic_narrative(instruments, weekly_dominant)
+            time.sleep(2)
+            weekly_narr = _generate_weekly_narrative_via_gemini(
+                instruments, weekly_dominant, weekly_report
+            )
+            if weekly_narr:
+                result["weekly_narrative"] = weekly_narr
+                write_cache("ai_weekly_narrative", {"narrative": weekly_narr})
+            else:
+                result["weekly_narrative"] = _heuristic_narrative(instruments, weekly_dominant)
 
     # --- Daily TL;DR ---
     cached_daily = read_cache("tldr_daily", max_age_hours=4.0)
     if cached_daily:
         result["tldr_daily"] = cached_daily.get("tldr")
     elif daily_report and daily_report.available and daily_report.body.strip():
-        time.sleep(1)
+        time.sleep(2)  # Pause to avoid rate limit after narrative call
         tldr = _generate_tldr_via_gemini(daily_report, "daily")
         if tldr:
             result["tldr_daily"] = tldr
             write_cache("tldr_daily", {"tldr": tldr})
+        else:
+            logger.warning("Daily TL;DR: Gemini returned None")
 
     # --- Weekly TL;DR ---
     cached_weekly = read_cache("tldr_weekly", max_age_hours=12.0)
     if cached_weekly:
         result["tldr_weekly"] = cached_weekly.get("tldr")
     elif weekly_report and weekly_report.available and weekly_report.body.strip():
-        time.sleep(1)
+        time.sleep(2)  # Pause to avoid rate limit
         tldr = _generate_tldr_via_gemini(weekly_report, "weekly")
         if tldr:
             result["tldr_weekly"] = tldr
             write_cache("tldr_weekly", {"tldr": tldr})
+        else:
+            logger.warning("Weekly TL;DR: Gemini returned None")
 
     return result
 

@@ -33,7 +33,7 @@ WEEKLY_CACHE_TTL_HOURS = 12.0
 REQUEST_TIMEOUT = 15
 
 # Max body length
-MAX_BODY_LENGTH = 5000
+MAX_BODY_LENGTH = 20000
 
 
 @dataclass
@@ -42,10 +42,18 @@ class MarketReport:
 
     title: str
     publication_date: str
-    body: str  # Max 5000 chars
+    body: str
     fetched_at: datetime
     available: bool = True
     error_message: str | None = None
+
+
+@dataclass
+class DailyReportDay:
+    """A single day's market recap."""
+
+    date_label: str  # e.g. "Thursday, 6/11/2026 p.m."
+    body: str  # Markdown content for that day
 
 
 def truncate_body(text: str) -> str:
@@ -191,18 +199,55 @@ def _parse_edward_jones_page(html: str) -> tuple[str, str, str]:
     # Try multiple content selectors in order of specificity
     content_elem = None
 
-    # 1. Look for rich-text div (Edward Jones uses this)
-    content_elem = soup.find("div", class_="rich-text")
+    # 1. Look for ALL rich-text divs (Edward Jones uses multiple for articles)
+    rich_texts = soup.find_all("div", class_="rich-text")
+    if rich_texts:
+        # Combine all rich-text divs + find images between them
+        # Get the common parent to preserve ordering
+        body_parts = []
+        seen_texts = set()
+
+        # Walk through the page in order to get rich-text + images interleaved
+        main = soup.find("main")
+        container = main if main else soup
+
+        # Find all content elements (rich-text divs and chart images)
+        for elem in container.find_all(["div", "img"], recursive=True):
+            if elem.name == "div" and "rich-text" in (elem.get("class") or []):
+                md = _html_to_markdown(elem)
+                if md.strip() and md.strip() not in seen_texts:
+                    seen_texts.add(md.strip())
+                    body_parts.append(md)
+            elif elem.name == "img":
+                src = elem.get("src", "")
+                alt = elem.get("alt", "")
+                # Only include chart/article images, not icons/logos
+                if src and ("chart" in src or "dam/" in src):
+                    img_md = f"\n![{alt or 'Chart'}]({src})\n"
+                    body_parts.append(img_md)
+
+        body = "\n\n".join(body_parts)
+
+        # Trim trailing non-article content (author bios, sidebars, etc.)
+        # Stop at "Sources" line if present — that's the end of the article
+        for marker in ["Sources for all data", "Previous weeks'", "Are you on track"]:
+            idx = body.find(marker)
+            if idx > 0:
+                # Include the sources line itself, trim after
+                end_of_line = body.find("\n", idx)
+                if end_of_line > 0:
+                    body = body[:end_of_line]
+                break
+
+        if body.strip():
+            return title, pub_date, truncate_body(body)
 
     # 2. Try article tag
+    content_elem = soup.find("article")
     if not content_elem:
-        content_elem = soup.find("article")
-
-    # 3. Try main content area but look for the content-heavy div inside
-    if not content_elem:
+        # 3. Try main content area but look for the content-heavy div inside
         main = soup.find("main")
         if main:
-            # Find the div with the most paragraph content
             divs = main.find_all("div", recursive=True)
             best_div = None
             best_p_count = 0
@@ -214,14 +259,12 @@ def _parse_edward_jones_page(html: str) -> tuple[str, str, str]:
             content_elem = best_div if best_div else main
 
     if content_elem:
-        # Remove the title from body if it's duplicated
         if title_elem and content_elem.find("h1"):
             h1 = content_elem.find("h1")
             if h1:
                 h1.decompose()
         body = _html_to_markdown(content_elem)
     else:
-        # Last resort: convert paragraphs to markdown
         paragraphs = soup.find_all("p")
         body = "\n\n".join(
             p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)
@@ -312,6 +355,44 @@ def _report_to_dict(report: MarketReport) -> dict:
     }
 
 
+def _parse_daily_page_multi_day(html: str) -> list[DailyReportDay]:
+    """Parse the daily recap page into individual day reports.
+
+    The Edward Jones daily page has an accordion with multiple days
+    (latest + 4 previous days).
+
+    Returns:
+        List of DailyReportDay, most recent first.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    days: list[DailyReportDay] = []
+
+    # Find the accordion article containing all days
+    accordion = soup.find("article", class_="accordion")
+    if not accordion:
+        return days
+
+    # Days are pairs of h2 (date) + div (content)
+    children = [c for c in accordion.children if hasattr(c, "name") and c.name]
+
+    i = 0
+    while i < len(children):
+        child = children[i]
+        if child.name == "h2" and "p.m." in child.get_text():
+            date_label = child.get_text(strip=True)
+            # Next sibling should be the content div
+            if i + 1 < len(children) and children[i + 1].name == "div":
+                content_div = children[i + 1]
+                body = _html_to_markdown(content_div)
+                if body.strip():
+                    days.append(DailyReportDay(date_label=date_label, body=body.strip()))
+                i += 2
+                continue
+        i += 1
+
+    return days
+
+
 def fetch_daily_recap() -> MarketReport:
     """Fetch Edward Jones daily market recap with caching.
 
@@ -319,7 +400,8 @@ def fetch_daily_recap() -> MarketReport:
     On fetch failure, serves stale cache if available.
 
     Returns:
-        MarketReport with content or error state.
+        MarketReport with the latest day's content as body.
+        Previous days are stored in cache separately.
     """
     cache_key = "daily_report"
 
@@ -335,7 +417,7 @@ def fetch_daily_recap() -> MarketReport:
         write_cache(cache_key, _report_to_dict(report))
     else:
         # Try to serve stale cache on failure
-        stale = read_cache(cache_key, max_age_hours=None)  # No TTL check
+        stale = read_cache(cache_key, max_age_hours=None)
         if stale is not None:
             stale_report = _report_from_cache(stale)
             stale_report.error_message = (
@@ -345,6 +427,35 @@ def fetch_daily_recap() -> MarketReport:
             return stale_report
 
     return report
+
+
+def fetch_daily_recap_all_days() -> list[DailyReportDay]:
+    """Fetch all daily recaps (latest + previous days).
+
+    Returns:
+        List of DailyReportDay, most recent first. Empty list on failure.
+    """
+    cache_key = "daily_report_days"
+    cached = read_cache(cache_key, max_age_hours=DAILY_CACHE_TTL_HOURS)
+    if cached is not None:
+        return [DailyReportDay(date_label=d["date_label"], body=d["body"]) for d in cached]
+
+    try:
+        response = requests.get(DAILY_RECAP_URL, timeout=REQUEST_TIMEOUT, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+        response.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Failed to fetch daily recap page: {e}")
+        return []
+
+    days = _parse_daily_page_multi_day(response.text)
+
+    if days:
+        write_cache(cache_key, [{"date_label": d.date_label, "body": d.body} for d in days])
+
+    return days
 
 
 def fetch_weekly_update() -> MarketReport:
