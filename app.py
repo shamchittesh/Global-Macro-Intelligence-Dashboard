@@ -104,11 +104,6 @@ week_start, week_end = get_current_trading_week(market_day)
 # Auto-invalidate stale cache on every page load (handles day changes)
 invalidate_stale_instrument_data()
 
-st.caption(
-    f"Latest market day: **{market_day.strftime('%A, %B %d, %Y')}** · "
-    f"Week: {week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}"
-)
-
 st.divider()
 
 # ---------------------------------------------------------------------------
@@ -150,6 +145,21 @@ st.subheader("📊 Macro Instruments")
 
 # Fetch data
 instruments = fetch_all_instruments(market_day, week_start, week_end)
+
+# Show actual data date (may differ from resolved market day if yfinance lags)
+actual_dates = [i.actual_date for i in instruments if i.actual_date]
+if actual_dates:
+    from datetime import date as _date
+    actual_day = _date.fromisoformat(actual_dates[0])
+    st.caption(
+        f"Data as of: **{actual_day.strftime('%A, %B %d, %Y')}** · "
+        f"Week: {week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}"
+    )
+else:
+    st.caption(
+        f"Latest market day: **{market_day.strftime('%A, %B %d, %Y')}** · "
+        f"Week: {week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}"
+    )
 
 # Display in columns (4 on top row, 3 on bottom)
 row1_cols = st.columns(4)

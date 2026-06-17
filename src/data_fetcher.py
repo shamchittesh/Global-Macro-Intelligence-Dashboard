@@ -100,6 +100,7 @@ def _process_instrument(
             daily_change_pct=daily_change,
             weekly_change_pct=weekly_change,
             data_available=(daily_change is not None or weekly_change is not None),
+            actual_date=daily_date.isoformat() if daily_change is not None else None,
         )
 
     except Exception as e:
@@ -149,6 +150,7 @@ def fetch_all_instruments(
                     daily_change_pct=d.get("daily_change_pct"),
                     weekly_change_pct=d.get("weekly_change_pct"),
                     data_available=d.get("data_available", True),
+                    actual_date=d.get("actual_date"),
                 ))
             else:
                 config = INSTRUMENT_CONFIG[name]
@@ -215,15 +217,18 @@ def fetch_all_instruments(
         instruments.append(instrument)
 
     # Cache the results — only if ALL instruments have daily data
-    # This prevents caching incomplete results from mid-session fetches
+    # AND the data is from the expected market day (not stale from yfinance lag)
     all_daily_available = all(
         inst.daily_change_pct is not None
         for inst in instruments
         if inst.data_available
     )
     has_data = any(inst.data_available for inst in instruments)
+    # Check if actual data matches requested market day
+    actual_dates = [i.actual_date for i in instruments if i.actual_date]
+    data_is_current = any(d == market_day.isoformat() for d in actual_dates)
 
-    if has_data and all_daily_available:
+    if has_data and all_daily_available and data_is_current:
         cache_data = {}
         for inst in instruments:
             cache_data[inst.ticker] = {
@@ -232,6 +237,7 @@ def fetch_all_instruments(
                 "daily_change_pct": inst.daily_change_pct,
                 "weekly_change_pct": inst.weekly_change_pct,
                 "data_available": inst.data_available,
+                "actual_date": inst.actual_date,
             }
         write_cache(cache_key, cache_data)
 

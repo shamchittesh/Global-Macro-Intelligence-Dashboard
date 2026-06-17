@@ -49,6 +49,7 @@ class InstrumentData:
     daily_change_pct: float | None = None
     weekly_change_pct: float | None = None
     data_available: bool = True
+    actual_date: str | None = None  # The actual date the daily data is from
 
 
 @dataclass
