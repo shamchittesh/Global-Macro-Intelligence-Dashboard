@@ -29,6 +29,7 @@ def _call_gemini(prompt: str) -> str | None:
     """Call Gemini 2.0 Flash with a prompt. Returns None on failure."""
     api_key = _get_gemini_key()
     if not api_key:
+        logger.warning("Gemini: No API key configured")
         return None
 
     try:
@@ -41,7 +42,7 @@ def _call_gemini(prompt: str) -> str | None:
         )
         return response.text.strip()
     except Exception as e:
-        logger.warning(f"Gemini call failed: {e}")
+        logger.warning(f"Gemini call failed: {type(e).__name__}: {e}")
         return None
 
 
@@ -296,7 +297,7 @@ def generate_all_ai_content(
         if cached_weekly_narrative:
             result["weekly_narrative"] = cached_weekly_narrative.get("narrative")
         else:
-            time.sleep(2)
+            time.sleep(4)
             weekly_narr = _generate_weekly_narrative_via_gemini(
                 instruments, weekly_dominant, weekly_report
             )
@@ -311,7 +312,7 @@ def generate_all_ai_content(
     if cached_daily:
         result["tldr_daily"] = cached_daily.get("tldr")
     elif daily_report and daily_report.available and daily_report.body.strip():
-        time.sleep(2)  # Pause to avoid rate limit after narrative call
+        time.sleep(4)
         tldr = _generate_tldr_via_gemini(daily_report, "daily")
         if tldr:
             result["tldr_daily"] = tldr
@@ -324,7 +325,7 @@ def generate_all_ai_content(
     if cached_weekly:
         result["tldr_weekly"] = cached_weekly.get("tldr")
     elif weekly_report and weekly_report.available and weekly_report.body.strip():
-        time.sleep(2)  # Pause to avoid rate limit
+        time.sleep(4)
         tldr = _generate_tldr_via_gemini(weekly_report, "weekly")
         if tldr:
             result["tldr_weekly"] = tldr

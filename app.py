@@ -101,6 +101,9 @@ st.title("🌍 Global Macro Intelligence Dashboard")
 market_day = get_latest_market_day()
 week_start, week_end = get_current_trading_week(market_day)
 
+# Auto-invalidate stale cache on every page load (handles day changes)
+invalidate_stale_instrument_data()
+
 st.caption(
     f"Latest market day: **{market_day.strftime('%A, %B %d, %Y')}** · "
     f"Week: {week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}"
