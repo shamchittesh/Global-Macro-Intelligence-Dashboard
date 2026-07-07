@@ -269,7 +269,7 @@ report_col1, report_col2 = st.columns(2)
 
 # Daily Report
 with report_col1:
-    st.markdown("#### 📅 Daily Market Update")
+    st.markdown("#### 📅 [Daily Market Update](https://www.edwardjones.com/us-en/market-news-insights/stock-market-news/daily-market-recap)")
 
     # Fetch all days
     all_days = fetch_daily_recap_all_days()
@@ -299,7 +299,7 @@ with report_col1:
 
 # Weekly Report
 with report_col2:
-    st.markdown("#### 📈 Weekly Market Update")
+    st.markdown("#### 📈 [Weekly Market Update](https://www.edwardjones.com/us-en/market-news-insights/stock-market-news/stock-market-weekly-update)")
 
     if weekly_report.available:
         st.markdown(f"**{weekly_report.title}**")
