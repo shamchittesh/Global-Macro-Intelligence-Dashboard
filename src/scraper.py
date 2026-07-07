@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # URLs
 DAILY_RECAP_URL = (
-    "https://www.edwardjones.ca/ca-en/market-news-insights/"
+    "https://www.edwardjones.com/us-en/market-news-insights/"
     "stock-market-news/daily-market-recap"
 )
 WEEKLY_UPDATE_URL = (
@@ -358,8 +358,9 @@ def _report_to_dict(report: MarketReport) -> dict:
 def _parse_daily_page_multi_day(html: str) -> list[DailyReportDay]:
     """Parse the daily recap page into individual day reports.
 
-    The Edward Jones daily page has an accordion with multiple days
-    (latest + 4 previous days).
+    The Edward Jones daily page has:
+    1. The latest day's report in a rich-text div at the top (outside accordion)
+    2. Previous days in an accordion with h2 + div pairs
 
     Returns:
         List of DailyReportDay, most recent first.
@@ -367,28 +368,43 @@ def _parse_daily_page_multi_day(html: str) -> list[DailyReportDay]:
     soup = BeautifulSoup(html, "html.parser")
     days: list[DailyReportDay] = []
 
-    # Find the accordion article containing all days
+    # 1. Check for the latest day in the top rich-text div (before accordion)
+    # The latest report is in the first rich-text div that contains a date pattern
+    import re
+    rich_texts = soup.find_all("div", class_="rich-text")
+    for rt in rich_texts[:3]:  # Only check first few
+        text = rt.get_text(strip=True)
+        # Look for date pattern like "Monday 7/6/2026 p.m." or similar
+        date_match = re.search(
+            r'(Monday|Tuesday|Wednesday|Thursday|Friday)[,]?\s+\d{1,2}/\d{1,2}/\d{4}\s+p\.m\.',
+            text
+        )
+        if date_match:
+            date_label = date_match.group(0)
+            body = _html_to_markdown(rt)
+            # Remove the date line from body since we show it as header
+            body = body.strip()
+            if body:
+                days.append(DailyReportDay(date_label=date_label, body=body))
+            break  # Only grab the first/latest one
+
+    # 2. Parse accordion for previous days
     accordion = soup.find("article", class_="accordion")
-    if not accordion:
-        return days
-
-    # Days are pairs of h2 (date) + div (content)
-    children = [c for c in accordion.children if hasattr(c, "name") and c.name]
-
-    i = 0
-    while i < len(children):
-        child = children[i]
-        if child.name == "h2" and "p.m." in child.get_text():
-            date_label = child.get_text(strip=True)
-            # Next sibling should be the content div
-            if i + 1 < len(children) and children[i + 1].name == "div":
-                content_div = children[i + 1]
-                body = _html_to_markdown(content_div)
-                if body.strip():
-                    days.append(DailyReportDay(date_label=date_label, body=body.strip()))
-                i += 2
-                continue
-        i += 1
+    if accordion:
+        children = [c for c in accordion.children if hasattr(c, "name") and c.name]
+        i = 0
+        while i < len(children):
+            child = children[i]
+            if child.name == "h2" and "p.m." in child.get_text():
+                date_label = child.get_text(strip=True)
+                if i + 1 < len(children) and children[i + 1].name == "div":
+                    content_div = children[i + 1]
+                    body = _html_to_markdown(content_div)
+                    if body.strip():
+                        days.append(DailyReportDay(date_label=date_label, body=body.strip()))
+                    i += 2
+                    continue
+            i += 1
 
     return days
 
